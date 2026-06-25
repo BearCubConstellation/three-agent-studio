@@ -4,10 +4,13 @@
   "version": "0.1.0",
   "packageManager": "pnpm@10.12.1",
   "scripts": {
+    "predev": "pnpm --filter @three-agent/scene-contract build",
     "dev": "pnpm --parallel --filter @three-agent/editor-web --filter @three-agent/scene-mcp dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
+    "predev:editor": "pnpm --filter @three-agent/scene-contract build",
     "dev:editor": "pnpm --filter @three-agent/editor-web dev",
+    "predev:mcp": "pnpm --filter @three-agent/scene-contract build",
     "dev:mcp": "pnpm --filter @three-agent/scene-mcp dev"
   },
   "devDependencies": {
