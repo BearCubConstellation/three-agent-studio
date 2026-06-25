@@ -17,7 +17,11 @@ jobs:
         run: corepack enable
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
-      - name: Typecheck
-        run: pnpm typecheck
+      - name: Typecheck scene contract
+        run: pnpm --filter @three-agent/scene-contract typecheck
+      - name: Typecheck editor
+        run: pnpm --filter @three-agent/editor-web typecheck
+      - name: Typecheck MCP server
+        run: pnpm --filter @three-agent/scene-mcp typecheck
       - name: Build
         run: pnpm build
