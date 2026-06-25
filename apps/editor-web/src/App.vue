@@ -16,6 +16,12 @@ interface InspectorForm extends SceneObjectInspector {
   scale: Vector3Tuple;
 }
 
+interface HistoryResult {
+  restored: boolean;
+  label?: string;
+  message?: string;
+}
+
 const axes = ['X', 'Y', 'Z'] as const;
 const viewport = ref<HTMLElement>();
 const gltfInput = ref<HTMLInputElement>();
@@ -40,6 +46,11 @@ function toInspectorForm(value: SceneObjectInspector | undefined): InspectorForm
     scale: [...value.scale] as Vector3Tuple,
     material: value.material ? { ...value.material } : undefined
   };
+}
+
+function historyNotice(action: string, result: HistoryResult) {
+  if (result.restored && result.label) return `已${action}：${result.label}`;
+  return result.message ?? `没有可${action}的场景事务。`;
 }
 
 function refreshEditorState() {
@@ -75,14 +86,12 @@ function setTransformMode(mode: TransformMode) {
 }
 
 function undo() {
-  const result = controller.undo();
-  notice.value = result.restored ? `已撤销：${result.label}` : result.message;
+  notice.value = historyNotice('撤销', controller.undo());
   refreshEditorState();
 }
 
 function redo() {
-  const result = controller.redo();
-  notice.value = result.restored ? `已重做：${result.label}` : result.message;
+  notice.value = historyNotice('重做', controller.redo());
   refreshEditorState();
 }
 
