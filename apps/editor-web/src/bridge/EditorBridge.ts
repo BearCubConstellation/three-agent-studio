@@ -37,9 +37,16 @@ export class EditorBridge {
   private async handle(request: Request) {
     switch (request.method) {
       case 'scene.getSummary': return this.controller.summary();
+      case 'scene.getTree': return this.controller.getSceneTree();
+      case 'scene.getSelected': return this.controller.getSelectedObjectInspector();
+      case 'scene.select': {
+        const params = request.params as { id?: unknown };
+        return this.controller.selectObject(typeof params?.id === 'string' ? params.id : undefined);
+      }
       case 'scene.validate': return this.controller.validate();
       case 'scene.capture': return this.controller.capture();
       case 'scene.undo': return this.controller.undo();
+      case 'scene.redo': return this.controller.redo();
       case 'scene.applyOps': return this.controller.apply(sceneApplyInputSchema.parse(request.params));
       default: throw new Error(`不支持的方法：${request.method}`);
     }
