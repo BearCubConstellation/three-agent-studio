@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { WebSocketServer, WebSocket } from 'ws';
+import { z } from 'zod';
 import { sceneApplyInputSchema } from '@three-agent/scene-contract';
 
 const port = Number(process.env.THREE_MCP_BRIDGE_PORT ?? 8787);
@@ -52,7 +53,7 @@ function callEditor(method: string, params: unknown = {}) {
 }
 
 const server = new McpServer(
-  { name: 'three-scene-mcp', version: '0.1.0' },
+  { name: 'three-scene-mcp', version: '0.2.0' },
   {
     instructions: '用于操作本地 Three.js 编辑器。修改前读取场景概览；修改后验证。仅使用结构化场景操作，不生成或执行任意 JavaScript。'
   }
@@ -84,6 +85,33 @@ server.registerTool(
 );
 
 server.registerTool(
+  'scene_get_tree',
+  {
+    description: '获取场景树，含对象 UUID、层级、类型、可见状态和当前选中状态。',
+    inputSchema: {}
+  },
+  async () => text(await callEditor('scene.getTree'))
+);
+
+server.registerTool(
+  'scene_get_selected',
+  {
+    description: '获取当前选中对象的名称、变换和标准材质属性；未选中时返回 null。',
+    inputSchema: {}
+  },
+  async () => text(await callEditor('scene.getSelected'))
+);
+
+server.registerTool(
+  'scene_select',
+  {
+    description: '按对象 UUID 选中场景对象。省略 id 可清除当前选择。',
+    inputSchema: { id: z.string().min(1).optional() }
+  },
+  async ({ id }) => text(await callEditor('scene.select', { id }))
+);
+
+server.registerTool(
   'scene_apply_ops',
   {
     description: '批量执行受控的场景操作。每批最多 20 条，修改后应调用 scene_validate。',
@@ -107,10 +135,19 @@ server.registerTool(
 server.registerTool(
   'scene_undo',
   {
-    description: '撤销最近一次由 scene_apply_ops 创建的场景事务。',
+    description: '撤销最近一次场景事务。',
     inputSchema: {}
   },
   async () => text(await callEditor('scene.undo'))
+);
+
+server.registerTool(
+  'scene_redo',
+  {
+    description: '重做最近一次被撤销的场景事务。',
+    inputSchema: {}
+  },
+  async () => text(await callEditor('scene.redo'))
 );
 
 server.registerTool(
