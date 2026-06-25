@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "three-scene-mcp": {
+      "command": "pnpm",
+      "args": ["--dir", "servers/three-scene-mcp", "dev"],
+      "cwd": "/ABSOLUTE/PATH/TO/three-agent-studio"
+    }
+  }
+}

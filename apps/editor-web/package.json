@@ -1,0 +1,22 @@
+{
+  "name": "@three-agent/editor-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "typecheck": "vue-tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@three-agent/scene-contract": "workspace:*",
+    "three": "latest",
+    "vue": "latest"
+  },
+  "devDependencies": {
+    "@types/three": "latest",
+    "@vitejs/plugin-vue": "latest",
+    "vite": "latest",
+    "vue-tsc": "latest"
+  }
+}

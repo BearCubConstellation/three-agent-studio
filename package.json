@@ -1,0 +1,16 @@
+{
+  "name": "three-agent-studio",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.12.1",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @three-agent/editor-web --filter @three-agent/scene-mcp dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "dev:editor": "pnpm --filter @three-agent/editor-web dev",
+    "dev:mcp": "pnpm --filter @three-agent/scene-mcp dev"
+  },
+  "devDependencies": {
+    "typescript": "latest"
+  }
+}
