@@ -13,12 +13,27 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
       - name: Enable Corepack
         run: corepack enable
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
-      - name: Typecheck
-        run: pnpm typecheck
+      - name: Typecheck scene contract
+        run: pnpm --filter @three-agent/scene-contract typecheck
+      - name: Build scene contract
+        run: pnpm --filter @three-agent/scene-contract build
+      - name: Typecheck editor
+        run: |
+          set -o pipefail
+          pnpm --filter @three-agent/editor-web typecheck 2>&1 | tee editor-typecheck.log
+      - name: Upload editor typecheck log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: editor-typecheck-log
+          path: editor-typecheck.log
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Typecheck MCP server
+        run: pnpm --filter @three-agent/scene-mcp typecheck
       - name: Build
         run: pnpm build
