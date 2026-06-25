@@ -130,8 +130,8 @@ function saveProject() {
   notice.value = '项目文件已保存。';
 }
 
-function openFilePicker(target: typeof gltfInput) {
-  target.value?.click();
+function openFilePicker(input: HTMLInputElement | undefined) {
+  input?.click();
 }
 
 async function onGltfSelected(event: Event) {
@@ -171,7 +171,7 @@ onMounted(async () => {
   await nextTick();
   if (viewport.value) controller.mount(viewport.value);
   stopSync = controller.subscribe(refreshEditorState);
-  new EditorBridge(controller, (value) => {
+  new EditorBridge(controller, (value: string) => {
     bridgeStatus.value = value;
     refreshEditorState();
   }).connect();
