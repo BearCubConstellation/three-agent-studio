@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
 import type { SceneApplyInput, SceneOperation, SceneSummary, SceneValidationIssue } from '@three-agent/scene-contract';
 
 export type Vector3Tuple = [number, number, number];
+export type TransformMode = 'translate' | 'rotate' | 'scale';
 
 export interface SceneTreeItem {
   id: string;
@@ -76,8 +78,18 @@ interface HistoryEntry {
   snapshot: SceneSnapshot;
 }
 
+interface TransformTransaction {
+  objectId: string;
+  position: Vector3Tuple;
+  rotation: Vector3Tuple;
+  scale: Vector3Tuple;
+  snapshot: SceneSnapshot;
+}
+
 const v3 = (value: Vector3Tuple) => new THREE.Vector3(...value);
 const toTuple = (value: THREE.Vector3): Vector3Tuple => [value.x, value.y, value.z];
+const rotationTuple = (value: THREE.Euler): Vector3Tuple => [value.x, value.y, value.z];
+const sameVector = (a: Vector3Tuple, b: Vector3Tuple) => a.every((value, index) => Math.abs(value - b[index]) < 0.000001);
 const readAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
   const reader = new FileReader();
   reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('无法读取文件。'));
@@ -91,6 +103,10 @@ export class SceneController {
   readonly renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 
   private controls?: OrbitControls;
+  private transformControls?: TransformControls;
+  private transformHelper?: THREE.Object3D;
+  private transformMode: TransformMode = 'translate';
+  private transformTransaction?: TransformTransaction;
   private readonly undoStack: HistoryEntry[] = [];
   private readonly redoStack: HistoryEntry[] = [];
   private readonly listeners = new Set<() => void>();
@@ -132,11 +148,27 @@ export class SceneController {
   mount(container: HTMLElement) {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     container.appendChild(this.renderer.domElement);
+
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.target.copy(this.cameraTarget);
     this.controls.enableDamping = true;
-    this.renderer.domElement.addEventListener('pointerdown', this.handlePointerDown);
 
+    this.transformControls = new TransformControls(this.camera, this.renderer.domElement);
+    this.transformControls.setMode(this.transformMode);
+    this.transformControls.setSpace('world');
+    this.transformControls.addEventListener('dragging-changed', (event) => {
+      if (this.controls) this.controls.enabled = !(event as { value?: boolean }).value;
+    });
+    this.transformControls.addEventListener('mouseDown', () => this.beginTransform());
+    this.transformControls.addEventListener('objectChange', () => this.emitChange());
+    this.transformControls.addEventListener('mouseUp', () => this.finishTransform());
+    this.transformHelper = this.transformControls.getHelper();
+    this.transformHelper.name = 'TransformGizmo';
+    this.transformHelper.userData.editorOnly = true;
+    this.scene.add(this.transformHelper);
+    this.syncTransformTarget();
+
+    this.renderer.domElement.addEventListener('pointerdown', this.handlePointerDown);
     const resize = () => {
       const width = container.clientWidth || 1;
       const height = container.clientHeight || 1;
@@ -153,6 +185,17 @@ export class SceneController {
       requestAnimationFrame(loop);
     };
     loop();
+  }
+
+  setTransformMode(mode: TransformMode) {
+    this.transformMode = mode;
+    this.transformControls?.setMode(mode);
+    this.emitChange();
+    return mode;
+  }
+
+  getTransformMode(): TransformMode {
+    return this.transformMode;
   }
 
   apply(input: SceneApplyInput) {
@@ -190,7 +233,7 @@ export class SceneController {
     let lightCount = 0;
     let objectCount = 0;
     this.scene.traverse((object) => {
-      if (object === this.scene || object.userData.editorOnly) return;
+      if (object === this.scene || this.isEditorOnly(object)) return;
       objectCount += 1;
       if ((object as THREE.Mesh).isMesh) meshCount += 1;
       if ((object as THREE.Light).isLight) lightCount += 1;
@@ -212,7 +255,7 @@ export class SceneController {
     if (summary.objectCount > 500) issues.push({ level: 'warning', code: 'HIGH_OBJECT_COUNT', message: `对象数量为 ${summary.objectCount}，建议合并静态网格或使用 InstancedMesh。` });
     this.scene.traverse((object) => {
       const mesh = object as THREE.Mesh;
-      if (!mesh.isMesh || mesh.userData.editorOnly) return;
+      if (!mesh.isMesh || this.isEditorOnly(mesh)) return;
       const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
       if (materials.some((material) => !material.isMeshStandardMaterial)) {
         issues.push({ level: 'info', code: 'NON_STANDARD_MATERIAL', message: '发现非标准材质，部分自动调参能力不可用。', targetId: mesh.uuid });
@@ -229,7 +272,7 @@ export class SceneController {
   getSceneTree(): SceneTreeItem[] {
     const result: SceneTreeItem[] = [];
     const visit = (object: THREE.Object3D, depth: number) => {
-      if (object.userData.editorOnly) return;
+      if (this.isEditorOnly(object)) return;
       result.push({
         id: object.uuid,
         name: object.name || object.type,
@@ -237,7 +280,7 @@ export class SceneController {
         depth,
         visible: object.visible,
         selected: object.uuid === this.selectedObjectId,
-        hasChildren: object.children.some((child) => !child.userData.editorOnly)
+        hasChildren: object.children.some((child) => !this.isEditorOnly(child))
       });
       object.children.forEach((child) => visit(child, depth + 1));
     };
@@ -248,10 +291,11 @@ export class SceneController {
   selectObject(id?: string) {
     if (id) {
       const object = this.scene.getObjectByProperty('uuid', id);
-      this.selectedObjectId = object && !object.userData.editorOnly ? object.uuid : undefined;
+      this.selectedObjectId = object && !this.isEditorOnly(object) ? object.uuid : undefined;
     } else {
       this.selectedObjectId = undefined;
     }
+    this.syncTransformTarget();
     this.emitChange();
     return this.getSelectedObjectInspector();
   }
@@ -259,7 +303,7 @@ export class SceneController {
   getSelectedObjectInspector(): SceneObjectInspector | undefined {
     if (!this.selectedObjectId) return undefined;
     const object = this.scene.getObjectByProperty('uuid', this.selectedObjectId);
-    if (!object || object.userData.editorOnly) return undefined;
+    if (!object || this.isEditorOnly(object)) return undefined;
 
     const inspector: SceneObjectInspector = {
       id: object.uuid,
@@ -267,7 +311,7 @@ export class SceneController {
       type: object.type,
       visible: object.visible,
       position: toTuple(object.position),
-      rotation: [object.rotation.x, object.rotation.y, object.rotation.z],
+      rotation: rotationTuple(object.rotation),
       scale: toTuple(object.scale)
     };
     const mesh = object as THREE.Mesh;
@@ -307,6 +351,7 @@ export class SceneController {
         }
         material.needsUpdate = true;
       }
+      this.syncTransformTarget();
       return this.getSelectedObjectInspector();
     });
   }
@@ -317,6 +362,7 @@ export class SceneController {
       target.removeFromParent();
       this.disposeObject(target);
       if (this.selectedObjectId === id) this.selectedObjectId = undefined;
+      this.syncTransformTarget();
       return { removed: id, summary: this.summary() };
     });
   }
@@ -348,6 +394,7 @@ export class SceneController {
         model.userData.sourceFile = source.name;
         this.scene.add(model);
         this.selectedObjectId = model.uuid;
+        this.syncTransformTarget();
         return { rootId: model.uuid, name: model.name, summary: this.summary() };
       });
     } finally {
@@ -359,7 +406,7 @@ export class SceneController {
     const exportScene = new THREE.Scene();
     exportScene.name = this.scene.name;
     this.scene.children
-      .filter((child) => !child.userData.editorOnly)
+      .filter((child) => !this.isEditorOnly(child))
       .forEach((child) => exportScene.add(child.clone(true)));
 
     const result = await new Promise<ArrayBuffer | Record<string, unknown>>((resolve, reject) => {
@@ -398,12 +445,7 @@ export class SceneController {
   }
 
   clearEnvironment() {
-    this.environmentRequestId += 1;
-    this.environmentTexture?.dispose();
-    this.environmentTexture = undefined;
-    this.environmentSource = undefined;
-    this.scene.environment = null;
-    this.scene.background = this.defaultBackground.clone();
+    this.clearEnvironmentSilently();
     this.emitChange();
     return this.getEnvironmentState();
   }
@@ -452,6 +494,7 @@ export class SceneController {
       this.selectedObjectId = project.selectedObjectId && this.scene.getObjectByProperty('uuid', project.selectedObjectId)
         ? project.selectedObjectId
         : undefined;
+      this.syncTransformTarget();
       if (project.environment) await this.applyEnvironmentSource(project.environment);
       else this.clearEnvironmentSilently();
       this.pushHistory('打开项目', before);
@@ -535,15 +578,43 @@ export class SceneController {
   }
 
   private handlePointerDown = (event: PointerEvent) => {
+    if (this.transformControls?.axis) return;
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.pointer, this.camera);
     const hit = this.raycaster
       .intersectObjects(this.scene.children, true)
-      .find((intersection) => !intersection.object.userData.editorOnly);
+      .find((intersection) => !this.isEditorOnly(intersection.object));
     this.selectObject(hit?.object.uuid);
   };
+
+  private beginTransform() {
+    const object = this.transformControls?.object;
+    if (!object || this.isEditorOnly(object)) return;
+    this.transformTransaction = {
+      objectId: object.uuid,
+      position: toTuple(object.position),
+      rotation: rotationTuple(object.rotation),
+      scale: toTuple(object.scale),
+      snapshot: this.captureSnapshot()
+    };
+  }
+
+  private finishTransform() {
+    const transaction = this.transformTransaction;
+    this.transformTransaction = undefined;
+    if (!transaction) return;
+    const object = this.scene.getObjectByProperty('uuid', transaction.objectId);
+    if (!object || this.isEditorOnly(object)) return;
+    const changed = !sameVector(transaction.position, toTuple(object.position))
+      || !sameVector(transaction.rotation, rotationTuple(object.rotation))
+      || !sameVector(transaction.scale, toTuple(object.scale));
+    if (!changed) return;
+    this.pushHistory('拖拽变换对象', transaction.snapshot);
+    this.redoStack.length = 0;
+    this.emitChange();
+  }
 
   private commit<T>(label: string, work: () => T) {
     const before = this.captureSnapshot();
@@ -567,16 +638,26 @@ export class SceneController {
 
   private captureSnapshot(): SceneSnapshot {
     return {
-      scene: this.scene.toJSON(),
+      scene: this.serializeScene(),
       camera: {
         position: toTuple(this.camera.position),
-        rotation: [this.camera.rotation.x, this.camera.rotation.y, this.camera.rotation.z],
+        rotation: rotationTuple(this.camera.rotation),
         fov: this.camera.fov
       },
       cameraTarget: toTuple(this.cameraTarget),
       selectedObjectId: this.selectedObjectId,
       environment: this.environmentSource ? { ...this.environmentSource } : undefined
     };
+  }
+
+  private serializeScene(): THREE.Object3DJSON {
+    const clone = this.scene.clone(true);
+    [...clone.children]
+      .filter((child) => child.userData.editorOnly)
+      .forEach((child) => child.removeFromParent());
+    clone.environment = null;
+    clone.background = this.defaultBackground.clone();
+    return clone.toJSON();
   }
 
   private restoreSnapshot(snapshot: SceneSnapshot) {
@@ -590,6 +671,7 @@ export class SceneController {
     this.selectedObjectId = snapshot.selectedObjectId && this.scene.getObjectByProperty('uuid', snapshot.selectedObjectId)
       ? snapshot.selectedObjectId
       : undefined;
+    this.syncTransformTarget();
     if (snapshot.environment) void this.applyEnvironmentSource(snapshot.environment);
     else this.clearEnvironmentSilently();
   }
@@ -597,11 +679,14 @@ export class SceneController {
   private restoreScene(data: THREE.Object3DJSON) {
     const restored = new THREE.ObjectLoader().parse(data) as THREE.Scene;
     for (const child of [...this.scene.children]) {
+      if (child.userData.editorOnly) continue;
       this.scene.remove(child);
       this.disposeObject(child);
     }
-    [...restored.children].forEach((child) => this.scene.add(child));
-    this.scene.background = restored.background;
+    [...restored.children]
+      .filter((child) => !child.userData.editorOnly)
+      .forEach((child) => this.scene.add(child));
+    this.scene.background = restored.background ?? this.defaultBackground.clone();
     this.scene.environment = restored.environment;
     this.scene.fog = restored.fog;
     this.scene.name = restored.name || 'Three Agent Studio Scene';
@@ -638,12 +723,29 @@ export class SceneController {
     target.removeFromParent();
     this.disposeObject(target);
     if (this.selectedObjectId === id) this.selectedObjectId = undefined;
+    this.syncTransformTarget();
   }
 
   private requireObject(id: string) {
     const target = this.scene.getObjectByProperty('uuid', id);
-    if (!target || target.userData.editorOnly) throw new Error(`找不到可编辑对象：${id}`);
+    if (!target || this.isEditorOnly(target)) throw new Error(`找不到可编辑对象：${id}`);
     return target;
+  }
+
+  private syncTransformTarget() {
+    if (!this.transformControls) return;
+    const target = this.selectedObjectId ? this.scene.getObjectByProperty('uuid', this.selectedObjectId) : undefined;
+    if (target && !this.isEditorOnly(target)) this.transformControls.attach(target);
+    else this.transformControls.detach();
+  }
+
+  private isEditorOnly(object: THREE.Object3D) {
+    let current: THREE.Object3D | null = object;
+    while (current) {
+      if (current.userData.editorOnly) return true;
+      current = current.parent;
+    }
+    return false;
   }
 
   private emitChange() {
