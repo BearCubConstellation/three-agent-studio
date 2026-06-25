@@ -6,6 +6,7 @@ import {
   type EnvironmentState,
   type SceneObjectInspector,
   type SceneTreeItem,
+  type TransformMode,
   type Vector3Tuple
 } from './core/SceneController';
 
@@ -27,6 +28,7 @@ const tree = ref<SceneTreeItem[]>([]);
 const inspector = ref<InspectorForm>();
 const environment = ref<EnvironmentState>({ showBackground: false });
 const controller = new SceneController();
+const transformMode = ref<TransformMode>(controller.getTransformMode());
 let stopSync: (() => void) | undefined;
 
 function toInspectorForm(value: SceneObjectInspector | undefined): InspectorForm | undefined {
@@ -45,6 +47,7 @@ function refreshEditorState() {
   tree.value = controller.getSceneTree();
   inspector.value = toInspectorForm(controller.getSelectedObjectInspector());
   environment.value = controller.getEnvironmentState();
+  transformMode.value = controller.getTransformMode();
 }
 
 async function runAction(successMessage: string, action: () => Promise<unknown> | unknown) {
@@ -63,6 +66,12 @@ function addCube() {
     label: '手动添加立方体',
     ops: [{ type: 'addPrimitive', primitive: 'box', position: [0, 0.5, 0], color: '#5b8cff' }]
   }));
+}
+
+function setTransformMode(mode: TransformMode) {
+  controller.setTransformMode(mode);
+  notice.value = `变换模式：${mode === 'translate' ? '移动' : mode === 'rotate' ? '旋转' : '缩放'}`;
+  refreshEditorState();
 }
 
 function undo() {
@@ -181,6 +190,10 @@ onBeforeUnmount(() => stopSync?.());
       </div>
       <div class="toolbar" aria-label="场景操作">
         <button @click="addCube">添加立方体</button>
+        <button class="secondary" :class="{ active: transformMode === 'translate' }" @click="setTransformMode('translate')">移动</button>
+        <button class="secondary" :class="{ active: transformMode === 'rotate' }" @click="setTransformMode('rotate')">旋转</button>
+        <button class="secondary" :class="{ active: transformMode === 'scale' }" @click="setTransformMode('scale')">缩放</button>
+        <span class="toolbar-divider" />
         <button class="secondary" @click="undo">撤销</button>
         <button class="secondary" @click="redo">重做</button>
         <span class="toolbar-divider" />
