@@ -8,6 +8,7 @@ import type { SceneApplyInput, SceneOperation, SceneSummary, SceneValidationIssu
 
 export type Vector3Tuple = [number, number, number];
 export type TransformMode = 'translate' | 'rotate' | 'scale';
+type PrimitiveKind = 'box' | 'sphere' | 'plane' | 'cylinder' | 'torus';
 
 export interface SceneTreeItem {
   id: string;
@@ -86,10 +87,21 @@ interface TransformTransaction {
   snapshot: SceneSnapshot;
 }
 
-const v3 = (value: Vector3Tuple) => new THREE.Vector3(...value);
+const v3 = (value: Vector3Tuple) => new THREE.Vector3(value[0], value[1], value[2]);
 const toTuple = (value: THREE.Vector3): Vector3Tuple => [value.x, value.y, value.z];
 const rotationTuple = (value: THREE.Euler): Vector3Tuple => [value.x, value.y, value.z];
+const setRotation = (object: THREE.Object3D, value: Vector3Tuple) => object.rotation.set(value[0], value[1], value[2]);
 const sameVector = (a: Vector3Tuple, b: Vector3Tuple) => a.every((value, index) => Math.abs(value - b[index]) < 0.000001);
+const isStandardMaterial = (material: THREE.Material | undefined): material is THREE.MeshStandardMaterial => (
+  material !== undefined && (material as THREE.MeshStandardMaterial).isMeshStandardMaterial === true
+);
+const primitiveGeometry: Record<PrimitiveKind, () => THREE.BufferGeometry> = {
+  box: () => new THREE.BoxGeometry(),
+  sphere: () => new THREE.SphereGeometry(0.8, 32, 16),
+  plane: () => new THREE.PlaneGeometry(2, 2),
+  cylinder: () => new THREE.CylinderGeometry(0.7, 0.7, 1.5, 32),
+  torus: () => new THREE.TorusGeometry(0.75, 0.25, 16, 48)
+};
 const readAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
   const reader = new FileReader();
   reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('无法读取文件。'));
@@ -157,7 +169,7 @@ export class SceneController {
     this.transformControls.setMode(this.transformMode);
     this.transformControls.setSpace('world');
     this.transformControls.addEventListener('dragging-changed', (event) => {
-      if (this.controls) this.controls.enabled = !(event as { value?: boolean }).value;
+      if (this.controls) this.controls.enabled = !(event as unknown as { value?: boolean }).value;
     });
     this.transformControls.addEventListener('mouseDown', () => this.beginTransform());
     this.transformControls.addEventListener('objectChange', () => this.emitChange());
@@ -257,7 +269,7 @@ export class SceneController {
       const mesh = object as THREE.Mesh;
       if (!mesh.isMesh || this.isEditorOnly(mesh)) return;
       const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-      if (materials.some((material) => !material.isMeshStandardMaterial)) {
+      if (materials.some((material) => !isStandardMaterial(material))) {
         issues.push({ level: 'info', code: 'NON_STANDARD_MATERIAL', message: '发现非标准材质，部分自动调参能力不可用。', targetId: mesh.uuid });
       }
     });
@@ -317,7 +329,7 @@ export class SceneController {
     const mesh = object as THREE.Mesh;
     if (mesh.isMesh) {
       const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-      if (material?.isMeshStandardMaterial) {
+      if (isStandardMaterial(material)) {
         inspector.material = {
           color: `#${material.color.getHexString()}`,
           roughness: material.roughness,
@@ -335,13 +347,13 @@ export class SceneController {
       if (patch.name !== undefined) object.name = patch.name.trim() || object.type;
       if (patch.visible !== undefined) object.visible = patch.visible;
       if (patch.position) object.position.copy(v3(patch.position));
-      if (patch.rotation) object.rotation.set(...patch.rotation);
+      if (patch.rotation) setRotation(object, patch.rotation);
       if (patch.scale) object.scale.copy(v3(patch.scale));
       if (patch.material) {
         const mesh = object as THREE.Mesh;
         if (!mesh.isMesh) throw new Error('目标对象不是网格，无法设置材质。');
         const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
-        if (!material?.isMeshStandardMaterial) throw new Error('当前仅支持 MeshStandardMaterial。');
+        if (!isStandardMaterial(material)) throw new Error('当前仅支持 MeshStandardMaterial。');
         if (patch.material.color) material.color.set(patch.material.color);
         if (patch.material.roughness !== undefined) material.roughness = THREE.MathUtils.clamp(patch.material.roughness, 0, 1);
         if (patch.material.metalness !== undefined) material.metalness = THREE.MathUtils.clamp(patch.material.metalness, 0, 1);
@@ -486,7 +498,7 @@ export class SceneController {
     try {
       this.restoreScene(project.scene);
       this.camera.position.copy(v3(project.camera.position));
-      this.camera.rotation.set(...project.camera.rotation);
+      setRotation(this.camera, project.camera.rotation);
       this.camera.fov = project.camera.fov;
       this.camera.updateProjectionMatrix();
       this.cameraTarget.copy(v3(project.cameraTarget));
@@ -509,20 +521,13 @@ export class SceneController {
 
   private applyOperation(op: SceneOperation): string | undefined {
     if (op.type === 'addPrimitive') {
-      const geometryMap = {
-        box: () => new THREE.BoxGeometry(),
-        sphere: () => new THREE.SphereGeometry(0.8, 32, 16),
-        plane: () => new THREE.PlaneGeometry(2, 2),
-        cylinder: () => new THREE.CylinderGeometry(0.7, 0.7, 1.5, 32),
-        torus: () => new THREE.TorusGeometry(0.75, 0.25, 16, 48)
-      };
       const mesh = new THREE.Mesh(
-        geometryMap[op.primitive](),
+        primitiveGeometry[op.primitive as PrimitiveKind](),
         new THREE.MeshStandardMaterial({ color: op.color ?? '#5b8cff', roughness: 0.45, metalness: 0.15 })
       );
       mesh.name = op.name ?? `${op.primitive}-${this.scene.children.length}`;
       if (op.position) mesh.position.copy(v3(op.position));
-      if (op.rotation) mesh.rotation.set(...op.rotation);
+      if (op.rotation) setRotation(mesh, op.rotation);
       if (op.scale) mesh.scale.copy(v3(op.scale));
       this.scene.add(mesh);
       return mesh.uuid;
@@ -534,7 +539,7 @@ export class SceneController {
     if (op.type === 'transformObject') {
       const target = this.requireObject(op.targetId);
       if (op.position) target.position.copy(v3(op.position));
-      if (op.rotation) target.rotation.set(...op.rotation);
+      if (op.rotation) setRotation(target, op.rotation);
       if (op.scale) target.scale.copy(v3(op.scale));
       return;
     }
@@ -542,7 +547,7 @@ export class SceneController {
       const target = this.requireObject(op.targetId) as THREE.Mesh;
       if (!target.isMesh) throw new Error('目标对象不是网格，无法设置材质。');
       const material = Array.isArray(target.material) ? target.material[0] : target.material;
-      if (!material?.isMeshStandardMaterial) throw new Error('当前仅支持 MeshStandardMaterial。');
+      if (!isStandardMaterial(material)) throw new Error('当前仅支持 MeshStandardMaterial。');
       if (op.color) material.color.set(op.color);
       if (op.roughness !== undefined) material.roughness = op.roughness;
       if (op.metalness !== undefined) material.metalness = op.metalness;
@@ -663,7 +668,7 @@ export class SceneController {
   private restoreSnapshot(snapshot: SceneSnapshot) {
     this.restoreScene(snapshot.scene);
     this.camera.position.copy(v3(snapshot.camera.position));
-    this.camera.rotation.set(...snapshot.camera.rotation);
+    setRotation(this.camera, snapshot.camera.rotation);
     this.camera.fov = snapshot.camera.fov;
     this.camera.updateProjectionMatrix();
     this.cameraTarget.copy(v3(snapshot.cameraTarget));
