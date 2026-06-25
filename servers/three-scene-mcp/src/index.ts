@@ -6,29 +6,58 @@ import { z } from 'zod';
 import { sceneApplyInputSchema } from '@three-agent/scene-contract';
 
 const port = Number(process.env.THREE_MCP_BRIDGE_PORT ?? 8787);
+const SESSION_REPLACED_CLOSE_CODE = 4001;
 let editor: WebSocket | undefined;
-const pending = new Map<string, {
+
+type PendingRequest = {
+  socket: WebSocket;
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
   timer: NodeJS.Timeout;
-}>();
+};
+
+const pending = new Map<string, PendingRequest>();
+
+function rejectPendingForSocket(socket: WebSocket, reason: Error) {
+  for (const [id, request] of pending) {
+    if (request.socket !== socket) continue;
+    clearTimeout(request.timer);
+    pending.delete(id);
+    request.reject(reason);
+  }
+}
 
 const bridge = new WebSocketServer({ port, host: '127.0.0.1', path: '/editor' });
 bridge.on('connection', (socket) => {
-  editor?.close(1000, '新的编辑器已连接');
+  const previousEditor = editor;
   editor = socket;
+
+  if (previousEditor && previousEditor !== socket && previousEditor.readyState === WebSocket.OPEN) {
+    previousEditor.close(SESSION_REPLACED_CLOSE_CODE, '新的编辑器页面已接管');
+  }
+
   process.stderr.write('[three-scene-mcp] 编辑器已连接\n');
-  socket.on('close', () => {
+
+  socket.on('close', (code) => {
     if (editor === socket) editor = undefined;
+    rejectPendingForSocket(socket, new Error('编辑器连接已关闭。'));
+
+    if (code !== 1000 && code !== SESSION_REPLACED_CLOSE_CODE) {
+      process.stderr.write(`[three-scene-mcp] 编辑器连接已断开（${code}）\n`);
+    }
   });
+
   socket.on('message', (raw) => {
-    const response = JSON.parse(raw.toString()) as {
-      id: string;
-      data?: unknown;
-      error?: string;
-    };
+    let response: { id: string; data?: unknown; error?: string };
+    try {
+      response = JSON.parse(raw.toString()) as { id: string; data?: unknown; error?: string };
+    } catch {
+      return;
+    }
+
     const request = pending.get(response.id);
-    if (!request) return;
+    if (!request || request.socket !== socket) return;
+
     clearTimeout(request.timer);
     pending.delete(response.id);
     response.error ? request.reject(new Error(response.error)) : request.resolve(response.data);
@@ -37,7 +66,8 @@ bridge.on('connection', (socket) => {
 process.stderr.write(`[three-scene-mcp] 浏览器桥接监听 ws://127.0.0.1:${port}/editor\n`);
 
 function callEditor(method: string, params: unknown = {}) {
-  if (!editor || editor.readyState !== WebSocket.OPEN) {
+  const target = editor;
+  if (!target || target.readyState !== WebSocket.OPEN) {
     throw new Error('Three.js 编辑器未连接。请先运行 editor-web 并打开 http://127.0.0.1:5173。');
   }
 
@@ -47,13 +77,21 @@ function callEditor(method: string, params: unknown = {}) {
       pending.delete(id);
       reject(new Error(`编辑器调用超时：${method}`));
     }, 15_000);
-    pending.set(id, { resolve, reject, timer });
-    editor!.send(JSON.stringify({ id, method, params }));
+
+    pending.set(id, { socket: target, resolve, reject, timer });
+    target.send(JSON.stringify({ id, method, params }), (error) => {
+      if (!error) return;
+      const request = pending.get(id);
+      if (!request) return;
+      clearTimeout(request.timer);
+      pending.delete(id);
+      request.reject(error);
+    });
   });
 }
 
 const server = new McpServer(
-  { name: 'three-scene-mcp', version: '0.2.0' },
+  { name: 'three-scene-mcp', version: '0.2.1' },
   {
     instructions: '用于操作本地 Three.js 编辑器。修改前读取场景概览；修改后验证。仅使用结构化场景操作，不生成或执行任意 JavaScript。'
   }
