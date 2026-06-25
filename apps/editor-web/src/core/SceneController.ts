@@ -600,7 +600,7 @@ export class SceneController {
       this.scene.remove(child);
       this.disposeObject(child);
     }
-    restored.children.forEach((child) => this.scene.add(child));
+    [...restored.children].forEach((child) => this.scene.add(child));
     this.scene.background = restored.background;
     this.scene.environment = restored.environment;
     this.scene.fog = restored.fog;
